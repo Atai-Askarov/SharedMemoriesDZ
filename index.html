@@ -10,25 +10,16 @@
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;overflow:hidden;font-family:system-ui,-apple-system,sans-serif}
-
 .screen{display:none;position:fixed;inset:0;flex-direction:column}
 .screen.active{display:flex}
 
 /* Welcome */
 #welcome{
-  background:#fdf6f4;
-  align-items:center;justify-content:center;
+  background:#fdf6f4;align-items:center;justify-content:center;
   padding:40px 32px;text-align:center
 }
-#welcome-date{
-  font-size:0.72rem;letter-spacing:0.16em;text-transform:uppercase;
-  color:#c08080;margin-bottom:14px
-}
-#welcome h1{
-  font-family:Georgia,'Times New Roman',serif;
-  font-size:2.25rem;font-weight:400;
-  color:#3d2626;margin-bottom:8px
-}
+#welcome-date{font-size:0.72rem;letter-spacing:0.16em;text-transform:uppercase;color:#c08080;margin-bottom:14px}
+#welcome h1{font-family:Georgia,'Times New Roman',serif;font-size:2.25rem;font-weight:400;color:#3d2626;margin-bottom:8px}
 #welcome-tagline{color:#7a6060;font-size:0.9rem;line-height:1.5;margin-bottom:48px}
 #start-btn{
   background:#c08080;color:#fff;border:none;border-radius:8px;
@@ -37,30 +28,37 @@ html,body{height:100%;overflow:hidden;font-family:system-ui,-apple-system,sans-s
 }
 #start-btn:active{background:#a86868}
 
-/* Shoot screen */
-#shoot-screen{background:#111;align-items:center;justify-content:center}
+/* Camera */
+#cam-screen{background:#000;overflow:hidden}
+#video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+canvas{display:none}
 
-#shoot-btn{
-  width:96px;height:96px;
-  background:#fff;border:5px solid rgba(255,255,255,0.35);border-radius:50%;
-  cursor:pointer;touch-action:manipulation
+/* Controls */
+#controls{
+  position:absolute;bottom:0;left:0;right:0;
+  padding:24px 28px calc(24px + env(safe-area-inset-bottom));
+  background:rgba(0,0,0,0.55);
+  display:flex;align-items:center;justify-content:space-between
 }
-#shoot-btn:active{opacity:0.75}
-
-#back-btn{
-  position:absolute;bottom:calc(28px + env(safe-area-inset-bottom));left:28px;
-  width:44px;height:44px;
+.ctrl-btn{
+  width:44px;height:44px;flex-shrink:0;
   background:rgba(255,255,255,0.15);border:none;border-radius:8px;
   color:#fff;cursor:pointer;touch-action:manipulation;
   display:flex;align-items:center;justify-content:center
 }
-#back-btn:active{background:rgba(255,255,255,0.3)}
+.ctrl-btn:active{background:rgba(255,255,255,0.3)}
+#capture-btn{
+  width:76px;height:76px;flex-shrink:0;
+  background:#fff;border:5px solid rgba(255,255,255,0.4);border-radius:50%;
+  cursor:pointer;touch-action:manipulation
+}
+#capture-btn:active{opacity:0.8}
+#capture-btn:disabled{opacity:0.4;cursor:default}
 
 /* Toast */
 #toast{
   position:absolute;top:16px;left:50%;transform:translateX(-50%);
-  padding:7px 14px;
-  background:rgba(0,0,0,0.72);color:#fff;
+  padding:7px 14px;background:rgba(0,0,0,0.72);color:#fff;
   border-radius:8px;font-size:0.85rem;white-space:nowrap;
   opacity:0;pointer-events:none;transition:opacity 0.15s
 }
@@ -68,78 +66,66 @@ html,body{height:100%;overflow:hidden;font-family:system-ui,-apple-system,sans-s
 #toast.ok{background:rgba(22,163,74,0.92)}
 #toast.err{background:rgba(220,38,38,0.92)}
 
-/* Photo count */
+/* Count */
 #count{
   position:absolute;top:16px;right:16px;
-  padding:4px 10px;
-  background:rgba(0,0,0,0.5);color:#fff;
+  padding:4px 10px;background:rgba(0,0,0,0.5);color:#fff;
   border-radius:8px;font-size:0.8rem
 }
 
-canvas{display:none}
+/* Shutter flash */
+#flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none}
 </style>
 </head>
 <body>
 
-<!-- Hidden file input — triggers native camera / photo picker -->
-<input id="file-input" type="file" accept="image/*" capture style="display:none">
-<canvas id="canvas"></canvas>
-
 <section id="welcome" class="screen active">
-  <!-- Edit couple names and date here -->
+  <!-- Edit names and date here -->
   <p id="welcome-date">June 14, 2025</p>
   <h1>Sarah &amp; James</h1>
   <p id="welcome-tagline">Help us capture memories<br>from today</p>
   <button id="start-btn">Start capturing</button>
 </section>
 
-<section id="shoot-screen" class="screen">
+<section id="cam-screen" class="screen">
+  <video id="video" playsinline autoplay muted></video>
+  <canvas id="canvas"></canvas>
+  <div id="flash" aria-hidden="true"></div>
   <span id="toast" role="status" aria-live="polite"></span>
   <span id="count" hidden></span>
-  <button id="shoot-btn" aria-label="Take photo"></button>
-  <button id="back-btn" aria-label="Go back">
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 5 5 12 12 19"/>
-    </svg>
-  </button>
+  <footer id="controls">
+    <button id="back-btn" class="ctrl-btn" aria-label="Go back">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 5 5 12 12 19"/>
+      </svg>
+    </button>
+    <button id="capture-btn" aria-label="Take photo"></button>
+    <button id="flip-btn" class="ctrl-btn" aria-label="Flip camera">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 .49-3.5"/>
+      </svg>
+    </button>
+  </footer>
 </section>
 
 <script>
-/*
-  UPLOAD ENDPOINT
-  ---------------
-  Set UPLOAD_URL to any endpoint that accepts:
-    POST  Content-Type: text/plain
-    Body: "<filename>|<base64-jpeg>"
-
-  Suggested free backend — Google Apps Script:
-  1. script.google.com → New project → paste:
-
-      function doPost(e) {
-        var parts = e.postData.contents.split('|');
-        var name  = parts[0];
-        var b64   = parts.slice(1).join('|');
-        var folder = DriveApp.getFolderById('YOUR_DRIVE_FOLDER_ID');
-        var blob = Utilities.newBlob(Utilities.base64Decode(b64), 'image/jpeg', name);
-        folder.createFile(blob);
-        return ContentService.createTextOutput('ok');
-      }
-
-  2. Deploy → Web app → Execute as: Me, Who has access: Anyone
-  3. Copy the /exec URL and paste below.
-  Note: fetch uses mode:'no-cors' so the response is opaque — success is optimistic.
-*/
 const UPLOAD_URL   = 'https://script.google.com/macros/s/AKfycbzq5G7Ap28lgYywdL-zK1HrXRNPAkG6DACBEs2wCzQDAi7MB981bNtnxGCCIqqNtLVOTw/exec';
 const JPEG_QUALITY = 0.85;
 const MAX_SIDE     = 1920;
 
-let photoCount = 0;
+// Cache one stream per facing mode so getUserMedia is called at most once per camera
+const streamCache = {};
+let activeStream  = null;
+let facingMode    = 'environment';
+let photoCount    = 0;
 let toastTimer;
 
-const canvas  = document.getElementById('canvas');
-const toastEl = document.getElementById('toast');
-const countEl = document.getElementById('count');
-const fileInput = document.getElementById('file-input');
+const video      = document.getElementById('video');
+const canvas     = document.getElementById('canvas');
+const toastEl    = document.getElementById('toast');
+const countEl    = document.getElementById('count');
+const flashEl    = document.getElementById('flash');
+const captureBtn = document.getElementById('capture-btn');
 
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -150,58 +136,92 @@ function showToast(msg, type) {
   clearTimeout(toastTimer);
   toastEl.textContent = msg;
   toastEl.className = 'show' + (type ? ' ' + type : '');
-  toastTimer = setTimeout(() => { toastEl.className = ''; }, 2800);
+  toastTimer = setTimeout(() => { toastEl.className = ''; }, 2500);
 }
 
-function processAndUpload(file) {
-  showToast('Uploading…');
-  const img = new Image();
-  const url = URL.createObjectURL(file);
-  img.onload = () => {
-    URL.revokeObjectURL(url);
-    let w = img.naturalWidth, h = img.naturalHeight;
-    if (w > MAX_SIDE) { h = Math.round(h * MAX_SIDE / w); w = MAX_SIDE; }
-    if (h > MAX_SIDE) { w = Math.round(w * MAX_SIDE / h); h = MAX_SIDE; }
-    canvas.width = w; canvas.height = h;
-    canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-
-    const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
-    const b64  = dataUrl.slice(dataUrl.indexOf(',') + 1);
-    const name = 'photo-' + Date.now() + '.jpg';
-
-    photoCount++;
-    countEl.textContent = photoCount + (photoCount === 1 ? ' photo' : ' photos');
-    countEl.hidden = false;
-
-    fetch(UPLOAD_URL, {
-      method:  'POST',
-      mode:    'no-cors',
-      headers: { 'Content-Type': 'text/plain' },
-      body:    name + '|' + b64
-    }).then(() => showToast('Saved!', 'ok'))
-      .catch(() => showToast('Upload failed — try again', 'err'));
-  };
-  img.onerror = () => { URL.revokeObjectURL(url); showToast('Could not read photo', 'err'); };
-  img.src = url;
+async function getStream(mode) {
+  // Return cached stream if its tracks are still live
+  if (streamCache[mode]?.active) return streamCache[mode];
+  const s = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: mode, width: { ideal: MAX_SIDE } },
+    audio: false
+  });
+  streamCache[mode] = s;
+  return s;
 }
 
-document.getElementById('start-btn').addEventListener('click', () => showScreen('shoot-screen'));
+async function startCamera() {
+  try {
+    activeStream = await getStream(facingMode);
+    video.srcObject = activeStream;
+    await video.play().catch(() => {});
+    showScreen('cam-screen');
+  } catch {
+    alert('Camera access denied.\nAllow camera permissions then reload.');
+  }
+}
 
-document.getElementById('shoot-btn').addEventListener('click', () => {
-  fileInput.value = '';   // reset so same photo can be re-selected
-  fileInput.click();
-});
+function stopAllStreams() {
+  Object.values(streamCache).forEach(s => s.getTracks().forEach(t => t.stop()));
+  Object.keys(streamCache).forEach(k => delete streamCache[k]);
+  video.srcObject = null;
+  activeStream = null;
+}
 
-fileInput.addEventListener('change', () => {
-  const file = fileInput.files[0];
-  if (file) processAndUpload(file);
-});
+async function flipCamera() {
+  const next = facingMode === 'environment' ? 'user' : 'environment';
+  try {
+    const s = await getStream(next);
+    activeStream = s;
+    facingMode = next;
+    video.srcObject = s;
+    await video.play().catch(() => {});
+  } catch { /* device may not have a front camera */ }
+}
 
+function capture() {
+  const vw = video.videoWidth  || 1280;
+  const vh = video.videoHeight || 720;
+  let w = vw, h = vh;
+  if (w > MAX_SIDE) { h = Math.round(h * MAX_SIDE / w); w = MAX_SIDE; }
+  if (h > MAX_SIDE) { w = Math.round(w * MAX_SIDE / h); h = MAX_SIDE; }
+  canvas.width = w; canvas.height = h;
+  canvas.getContext('2d').drawImage(video, 0, 0, w, h);
+
+  const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
+  const b64  = dataUrl.slice(dataUrl.indexOf(',') + 1);
+  const name = 'photo-' + Date.now() + '.jpg';
+
+  // Shutter flash
+  flashEl.style.transition = 'none';
+  flashEl.style.opacity = '0.9';
+  requestAnimationFrame(() => {
+    flashEl.style.transition = 'opacity 0.3s';
+    flashEl.style.opacity = '0';
+  });
+
+  photoCount++;
+  countEl.textContent = photoCount + (photoCount === 1 ? ' photo' : ' photos');
+  countEl.hidden = false;
+
+  // Upload in background — camera stays live
+  fetch(UPLOAD_URL, {
+    method: 'POST', mode: 'no-cors',
+    headers: { 'Content-Type': 'text/plain' },
+    body: name + '|' + b64
+  }).then(() => showToast('Saved!', 'ok'))
+    .catch(() => showToast('Upload failed — try again', 'err'));
+}
+
+document.getElementById('start-btn').addEventListener('click', startCamera);
 document.getElementById('back-btn').addEventListener('click', () => {
+  stopAllStreams();
   showScreen('welcome');
   photoCount = 0;
   countEl.hidden = true;
 });
+captureBtn.addEventListener('click', capture);
+document.getElementById('flip-btn').addEventListener('click', flipCamera);
 </script>
 </body>
 </html>
