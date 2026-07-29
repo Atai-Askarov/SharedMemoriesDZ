@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#111">
+<title>Sarah &amp; James — Wedding Photos</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden;font-family:system-ui,-apple-system,sans-serif}
+
+.screen{display:none;position:fixed;inset:0;flex-direction:column}
+.screen.active{display:flex}
+
+/* Welcome */
+#welcome{
+  background:#fdf6f4;
+  align-items:center;justify-content:center;
+  padding:40px 32px;text-align:center
+}
+#welcome-date{
+  font-size:0.72rem;letter-spacing:0.16em;text-transform:uppercase;
+  color:#c08080;margin-bottom:14px
+}
+#welcome h1{
+  font-family:Georgia,'Times New Roman',serif;
+  font-size:2.25rem;font-weight:400;
+  color:#3d2626;margin-bottom:8px
+}
+#welcome-tagline{color:#7a6060;font-size:0.9rem;line-height:1.5;margin-bottom:48px}
+#start-btn{
+  background:#c08080;color:#fff;border:none;border-radius:8px;
+  padding:14px 0;width:100%;max-width:280px;
+  font-size:1rem;font-weight:500;cursor:pointer;touch-action:manipulation
+}
+#start-btn:active{background:#a86868}
+
+/* Shoot screen */
+#shoot-screen{background:#111;align-items:center;justify-content:center}
+
+#shoot-btn{
+  width:88px;height:88px;
+  background:#fff;border:5px solid rgba(255,255,255,0.35);border-radius:50%;
+  cursor:pointer;touch-action:manipulation;
+  display:flex;align-items:center;justify-content:center
+}
+#shoot-btn:active{opacity:0.75}
+#shoot-hint{
+  position:absolute;bottom:160px;
+  color:rgba(255,255,255,0.4);font-size:0.8rem;letter-spacing:0.05em
+}
+
+/* Controls bar */
+#controls{
+  position:absolute;bottom:0;left:0;right:0;
+  padding:24px 28px calc(24px + env(safe-area-inset-bottom));
+  background:rgba(0,0,0,0.55);
+  display:flex;align-items:center;justify-content:space-between
+}
+#back-btn{
+  width:44px;height:44px;flex-shrink:0;
+  background:rgba(255,255,255,0.15);border:none;border-radius:8px;
+  color:#fff;cursor:pointer;touch-action:manipulation;
+  display:flex;align-items:center;justify-content:center
+}
+#back-btn:active{background:rgba(255,255,255,0.3)}
+
+/* Toast */
+#toast{
+  position:absolute;top:16px;left:50%;transform:translateX(-50%);
+  padding:7px 14px;
+  background:rgba(0,0,0,0.72);color:#fff;
+  border-radius:8px;font-size:0.85rem;white-space:nowrap;
+  opacity:0;pointer-events:none;transition:opacity 0.15s
+}
+#toast.show{opacity:1}
+#toast.ok{background:rgba(22,163,74,0.92)}
+#toast.err{background:rgba(220,38,38,0.92)}
+
+/* Photo count */
+#count{
+  position:absolute;top:16px;right:16px;
+  padding:4px 10px;
+  background:rgba(0,0,0,0.5);color:#fff;
+  border-radius:8px;font-size:0.8rem
+}
+
+canvas{display:none}
+</style>
+</head>
+<body>
+
+<!-- Hidden file input — triggers native camera / photo picker -->
+<input id="file-input" type="file" accept="image/*" style="display:none">
+<canvas id="canvas"></canvas>
+
+<section id="welcome" class="screen active">
+  <!-- Edit couple names and date here -->
+  <p id="welcome-date">June 14, 2025</p>
+  <h1>Sarah &amp; James</h1>
+  <p id="welcome-tagline">Help us capture memories<br>from today</p>
+  <button id="start-btn">Start capturing</button>
+</section>
+
+<section id="shoot-screen" class="screen">
+  <span id="toast" role="status" aria-live="polite"></span>
+  <span id="count" hidden></span>
+  <p id="shoot-hint">Tap to open camera</p>
+  <button id="shoot-btn" aria-label="Take photo">
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#111" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+      <circle cx="12" cy="13" r="4"/>
+    </svg>
+  </button>
+  <footer id="controls">
+    <button id="back-btn" aria-label="Go back">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 5 5 12 12 19"/>
+      </svg>
+    </button>
+    <span style="width:44px"></span>
+  </footer>
+</section>
+
+<script>
+/*
+  UPLOAD ENDPOINT
+  ---------------
+  Set UPLOAD_URL to any endpoint that accepts:
+    POST  Content-Type: text/plain
+    Body: "<filename>|<base64-jpeg>"
+
+  Suggested free backend — Google Apps Script:
+  1. script.google.com → New project → paste:
+
+      function doPost(e) {
+        var parts = e.postData.contents.split('|');
+        var name  = parts[0];
+        var b64   = parts.slice(1).join('|');
+        var folder = DriveApp.getFolderById('YOUR_DRIVE_FOLDER_ID');
+        var blob = Utilities.newBlob(Utilities.base64Decode(b64), 'image/jpeg', name);
+        folder.createFile(blob);
+        return ContentService.createTextOutput('ok');
+      }
+
+  2. Deploy → Web app → Execute as: Me, Who has access: Anyone
+  3. Copy the /exec URL and paste below.
+  Note: fetch uses mode:'no-cors' so the response is opaque — success is optimistic.
+*/
+const UPLOAD_URL   = 'https://script.google.com/macros/s/AKfycbzq5G7Ap28lgYywdL-zK1HrXRNPAkG6DACBEs2wCzQDAi7MB981bNtnxGCCIqqNtLVOTw/exec';
+const JPEG_QUALITY = 0.85;
+const MAX_SIDE     = 1920;
+
+let photoCount = 0;
+let toastTimer;
+
+const canvas  = document.getElementById('canvas');
+const toastEl = document.getElementById('toast');
+const countEl = document.getElementById('count');
+const fileInput = document.getElementById('file-input');
+
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+function showToast(msg, type) {
+  clearTimeout(toastTimer);
+  toastEl.textContent = msg;
+  toastEl.className = 'show' + (type ? ' ' + type : '');
+  toastTimer = setTimeout(() => { toastEl.className = ''; }, 2800);
+}
+
+function processAndUpload(file) {
+  showToast('Uploading…');
+  const img = new Image();
+  const url = URL.createObjectURL(file);
+  img.onload = () => {
+    URL.revokeObjectURL(url);
+    let w = img.naturalWidth, h = img.naturalHeight;
+    if (w > MAX_SIDE) { h = Math.round(h * MAX_SIDE / w); w = MAX_SIDE; }
+    if (h > MAX_SIDE) { w = Math.round(w * MAX_SIDE / h); h = MAX_SIDE; }
+    canvas.width = w; canvas.height = h;
+    canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+
+    const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
+    const b64  = dataUrl.slice(dataUrl.indexOf(',') + 1);
+    const name = 'photo-' + Date.now() + '.jpg';
+
+    photoCount++;
+    countEl.textContent = photoCount + (photoCount === 1 ? ' photo' : ' photos');
+    countEl.hidden = false;
+
+    fetch(UPLOAD_URL, {
+      method:  'POST',
+      mode:    'no-cors',
+      headers: { 'Content-Type': 'text/plain' },
+      body:    name + '|' + b64
+    }).then(() => showToast('Saved!', 'ok'))
+      .catch(() => showToast('Upload failed — try again', 'err'));
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); showToast('Could not read photo', 'err'); };
+  img.src = url;
+}
+
+document.getElementById('start-btn').addEventListener('click', () => showScreen('shoot-screen'));
+
+document.getElementById('shoot-btn').addEventListener('click', () => {
+  fileInput.value = '';   // reset so same photo can be re-selected
+  fileInput.click();
+});
+
+fileInput.addEventListener('change', () => {
+  const file = fileInput.files[0];
+  if (file) processAndUpload(file);
+});
+
+document.getElementById('back-btn').addEventListener('click', () => {
+  showScreen('welcome');
+  photoCount = 0;
+  countEl.hidden = true;
+});
+</script>
+</body>
+</html>
