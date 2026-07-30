@@ -9,7 +9,11 @@
 <title>David &amp; Zoe — Wedding Photos</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-html,body{height:100%;overflow:hidden;font-family:system-ui,-apple-system,sans-serif}
+html,body{height:100%;font-family:system-ui,-apple-system,sans-serif}
+/* The welcome screen stays pullable so guests can refresh to the newest
+   version. While the viewfinder is up, swallow the gesture — an accidental
+   pull mid-shoot would reload the page and drop the camera. */
+body.shooting{overflow:hidden;overscroll-behavior:none}
 .screen{display:none;position:fixed;inset:0;flex-direction:column}
 .screen.active{display:flex}
 
@@ -134,6 +138,19 @@ const noteEl     = document.getElementById('welcome-note');
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
+  document.body.classList.toggle('shooting', id === 'cam-screen');
+}
+
+function onCamScreen() {
+  return document.getElementById('cam-screen').classList.contains('active');
+}
+
+// Leaving the viewfinder: release the camera and reset the session count.
+function leaveCamera() {
+  stopAllStreams();
+  showScreen('welcome');
+  photoCount = 0;
+  countEl.hidden = true;
 }
 
 function showToast(msg, type) {
@@ -180,16 +197,23 @@ function stopAllStreams() {
   activeStream = null;
 }
 
+// Push a history entry when the viewfinder opens, so the phone's back button
+// has somewhere to land inside the app instead of leaving the site.
+function enterCamera() {
+  if (history.state?.screen !== 'camera') history.pushState({ screen: 'camera' }, '');
+  showScreen('cam-screen');
+}
+
 async function startCamera() {
   // Reuse a stream that is already open so we never call getUserMedia twice.
-  if (activeStream) { showScreen('cam-screen'); return; }
+  if (activeStream) { enterCamera(); return; }
   try {
     const s = await openCamera({ facingMode: 'environment' });
     await attach(s);
     facing = settingsOf(s).facingMode || 'environment';
     try { localStorage.setItem(GRANT_KEY, '1'); } catch {}
     noteEl.hidden = true;
-    showScreen('cam-screen');
+    enterCamera();
   } catch (err) {
     const denied = err && (err.name === 'NotAllowedError' || err.name === 'SecurityError');
     if (denied) {
@@ -290,12 +314,14 @@ function capture() {
 }
 
 document.getElementById('start-btn').addEventListener('click', startCamera);
-document.getElementById('back-btn').addEventListener('click', () => {
-  stopAllStreams();
-  showScreen('welcome');
-  photoCount = 0;
-  countEl.hidden = true;
-});
+// Both the on-screen arrow and the phone's back button take the same route,
+// so the history entry is always consumed exactly once.
+document.getElementById('back-btn').addEventListener('click', () => history.back());
+window.addEventListener('popstate', () => { if (onCamScreen()) leaveCamera(); });
+
+// A reload leaves a stale camera entry behind — the app always restarts on the
+// welcome screen, so drop it or the first back press would appear to do nothing.
+if (history.state?.screen === 'camera') history.replaceState(null, '');
 captureBtn.addEventListener('click', capture);
 flipBtn.addEventListener('click', flipCamera);
 
