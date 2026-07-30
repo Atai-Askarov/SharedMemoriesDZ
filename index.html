@@ -139,10 +139,18 @@ function showToast(msg, type) {
 
 async function startCamera() {
   try {
+    // Open rear camera — this is the main permission prompt
     activeStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: facing, width: { ideal: MAX_SIDE } },
+      video: { facingMode: 'environment', width: { ideal: MAX_SIDE } },
       audio: false
     });
+
+    // Silently pre-warm the front camera so iOS doesn't prompt again on first flip.
+    // We open it, then immediately stop its tracks — the permission is now cached by the OS.
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: 'user' } }, audio: false })
+      .then(s => s.getTracks().forEach(t => t.stop()))
+      .catch(() => { /* no front camera — flip button will show an error if tapped */ });
+
     video.srcObject = activeStream;
     await video.play().catch(() => {});
     showScreen('cam-screen');
