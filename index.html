@@ -145,11 +145,12 @@ async function startCamera() {
       audio: false
     });
 
-    // Silently pre-warm the front camera so iOS doesn't prompt again on first flip.
-    // We open it, then immediately stop its tracks — the permission is now cached by the OS.
+    // Pre-warm the front camera so the OS caches the permission before the user ever taps flip.
+    // Try exact first (iOS), fall back to ideal (some Android devices ignore exact).
     navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: 'user' } }, audio: false })
+      .catch(() => navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false }))
       .then(s => s.getTracks().forEach(t => t.stop()))
-      .catch(() => { /* no front camera — flip button will show an error if tapped */ });
+      .catch(() => {});
 
     video.srcObject = activeStream;
     await video.play().catch(() => {});
@@ -167,20 +168,25 @@ function stopAllStreams() {
 
 async function flipCamera() {
   const next = facing === 'environment' ? 'user' : 'environment';
+  let s;
   try {
-    // getUserMedia here does NOT prompt — permission was already granted at startCamera
-    const s = await navigator.mediaDevices.getUserMedia({
+    // exact facingMode is reliable on iOS; some Android devices need the ideal fallback
+    s = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { exact: next }, width: { ideal: MAX_SIDE } },
       audio: false
-    });
-    activeStream.getTracks().forEach(t => t.stop());
-    activeStream = s;
-    facing = next;
-    video.srcObject = s;
-    await video.play().catch(() => {});
+    }).catch(() => navigator.mediaDevices.getUserMedia({
+      video: { facingMode: next, width: { ideal: MAX_SIDE } },
+      audio: false
+    }));
   } catch {
     showToast('Front camera not available', 'err');
+    return;
   }
+  activeStream.getTracks().forEach(t => t.stop());
+  activeStream = s;
+  facing = next;
+  video.srcObject = s;
+  await video.play().catch(() => {});
 }
 
 function capture() {
