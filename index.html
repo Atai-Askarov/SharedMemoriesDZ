@@ -139,18 +139,12 @@ function showToast(msg, type) {
 
 async function startCamera() {
   try {
-    // Open rear camera — this is the main permission prompt
+    // Single permission prompt — modern iOS/Android grant camera access per origin,
+    // so this covers both rear and front cameras for the whole session.
     activeStream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment', width: { ideal: MAX_SIDE } },
       audio: false
     });
-
-    // Pre-warm the front camera so the OS caches the permission before the user ever taps flip.
-    // Try exact first (iOS), fall back to ideal (some Android devices ignore exact).
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: 'user' } }, audio: false })
-      .catch(() => navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false }))
-      .then(s => s.getTracks().forEach(t => t.stop()))
-      .catch(() => {});
 
     video.srcObject = activeStream;
     await video.play().catch(() => {});
@@ -170,16 +164,14 @@ async function flipCamera() {
   const next = facing === 'environment' ? 'user' : 'environment';
   let s;
   try {
-    // exact facingMode is reliable on iOS; some Android devices need the ideal fallback
+    // Permission is already granted from startCamera — this call is silent on both iOS and Android.
+    // Use ideal facingMode (not exact) so devices without a matching camera still return a stream.
     s = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { exact: next }, width: { ideal: MAX_SIDE } },
-      audio: false
-    }).catch(() => navigator.mediaDevices.getUserMedia({
       video: { facingMode: next, width: { ideal: MAX_SIDE } },
       audio: false
-    }));
+    });
   } catch {
-    showToast('Front camera not available', 'err');
+    showToast('Camera not available', 'err');
     return;
   }
   activeStream.getTracks().forEach(t => t.stop());
