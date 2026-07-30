@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="theme-color" content="#111">
-<title>Sarah &amp; James — Wedding Photos</title>
+<title>David &amp; Zoe — Wedding Photos</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;overflow:hidden;font-family:system-ui,-apple-system,sans-serif}
@@ -27,6 +27,7 @@ html,body{height:100%;overflow:hidden;font-family:system-ui,-apple-system,sans-s
   font-size:1rem;font-weight:500;cursor:pointer;touch-action:manipulation
 }
 #start-btn:active{background:#a86868}
+#welcome-note{margin-top:20px;max-width:300px;font-size:0.82rem;line-height:1.5;color:#a05656}
 
 /* Camera */
 #cam-screen{background:#000;overflow:hidden}
@@ -82,9 +83,10 @@ canvas{display:none}
 <section id="welcome" class="screen active">
   <!-- Edit names and date here -->
   <p id="welcome-date">June 14, 2025</p>
-  <h1>Sarah &amp; James</h1>
+  <h1>David &amp; Zoe</h1>
   <p id="welcome-tagline">Help us capture memories<br>from today</p>
   <button id="start-btn">Start capturing</button>
+  <p id="welcome-note" hidden></p>
 </section>
 
 <section id="cam-screen" class="screen">
@@ -112,10 +114,12 @@ canvas{display:none}
 const UPLOAD_URL   = 'https://script.google.com/macros/s/AKfycbzq5G7Ap28lgYywdL-zK1HrXRNPAkG6DACBEs2wCzQDAi7MB981bNtnxGCCIqqNtLVOTw/exec';
 const JPEG_QUALITY = 0.85;
 const MAX_SIDE     = 1920;
+const GRANT_KEY    = 'sm-camera-granted';
 
 let activeStream = null;
 let facing       = 'environment';
 let photoCount   = 0;
+let switching    = false;
 let toastTimer;
 
 const video      = document.getElementById('video');
@@ -124,6 +128,8 @@ const toastEl    = document.getElementById('toast');
 const countEl    = document.getElementById('count');
 const flashEl    = document.getElementById('flash');
 const captureBtn = document.getElementById('capture-btn');
+const flipBtn    = document.getElementById('flip-btn');
+const noteEl     = document.getElementById('welcome-note');
 
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -137,19 +143,35 @@ function showToast(msg, type) {
   toastTimer = setTimeout(() => { toastEl.className = ''; }, 2500);
 }
 
-async function startCamera() {
+function showNote(msg) {
+  noteEl.textContent = msg;
+  noteEl.hidden = false;
+}
+
+function settingsOf(stream) {
+  return stream?.getVideoTracks()[0]?.getSettings?.() || {};
+}
+
+async function videoInputs() {
   try {
-    activeStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: MAX_SIDE } },
-      audio: false
-    });
-    facing = 'environment';
-    video.srcObject = activeStream;
-    await video.play().catch(() => {});
-    showScreen('cam-screen');
+    const list = await navigator.mediaDevices.enumerateDevices();
+    return list.filter(d => d.kind === 'videoinput');
   } catch {
-    alert('Camera access denied.\nAllow camera permissions then reload.');
+    return [];
   }
+}
+
+function openCamera(videoConstraints) {
+  return navigator.mediaDevices.getUserMedia({
+    video: Object.assign({ width: { ideal: MAX_SIDE } }, videoConstraints),
+    audio: false
+  });
+}
+
+async function attach(stream) {
+  activeStream = stream;
+  video.srcObject = stream;
+  await video.play().catch(() => {});
 }
 
 function stopAllStreams() {
@@ -158,28 +180,82 @@ function stopAllStreams() {
   activeStream = null;
 }
 
-async function flipCamera() {
-  const next = facing === 'environment' ? 'user' : 'environment';
-  let s;
+async function startCamera() {
+  // Reuse a stream that is already open so we never call getUserMedia twice.
+  if (activeStream) { showScreen('cam-screen'); return; }
   try {
-    // Permission is already granted from startCamera — this call is silent on both iOS and Android.
-    // Use ideal facingMode (not exact) so devices without a matching camera still return a stream.
-    s = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: next, width: { ideal: MAX_SIDE } },
-      audio: false
-    });
-  } catch {
-    showToast('Camera not available', 'err');
+    const s = await openCamera({ facingMode: 'environment' });
+    await attach(s);
+    facing = settingsOf(s).facingMode || 'environment';
+    try { localStorage.setItem(GRANT_KEY, '1'); } catch {}
+    noteEl.hidden = true;
+    showScreen('cam-screen');
+  } catch (err) {
+    const denied = err && (err.name === 'NotAllowedError' || err.name === 'SecurityError');
+    if (denied) {
+      try { localStorage.removeItem(GRANT_KEY); } catch {}
+      showNote('Camera access is blocked. Allow the camera for this site in your browser settings, then tap again.');
+    } else {
+      showNote('No camera is available on this device.');
+    }
+  }
+}
+
+async function flipCamera() {
+  if (switching || !activeStream) return;
+  switching = true;
+  flipBtn.disabled = true;
+
+  const prevId   = settingsOf(activeStream).deviceId || '';
+  const prevFace = facing;
+  const next     = facing === 'environment' ? 'user' : 'environment';
+
+  const inputs = await videoInputs();
+  if (inputs.length === 1) {
+    showToast('Only one camera on this device', 'err');
+    switching = false;
+    flipBtn.disabled = false;
     return;
   }
-  activeStream.getTracks().forEach(t => t.stop());
-  activeStream = s;
-  facing = next;
-  video.srcObject = s;
-  await video.play().catch(() => {});
+
+  // Release the current camera before opening the other one. Many phones
+  // refuse to hand out a second camera while the first track is still live,
+  // and that rejection is what made the flip silently do nothing.
+  stopAllStreams();
+
+  // exact facingMode is the only form the browser must honour — the ideal
+  // form is a hint and commonly returns the same camera back. deviceId is
+  // the fallback for devices that label neither camera front/back.
+  const other = inputs.find(d => d.deviceId && d.deviceId !== prevId);
+  const plans = [{ facingMode: { exact: next } }];
+  if (other) plans.push({ deviceId: { exact: other.deviceId } });
+  plans.push({ facingMode: next });
+
+  for (const plan of plans) {
+    let s;
+    try { s = await openCamera(plan); } catch { continue; }
+    const id = settingsOf(s).deviceId || '';
+    if (id && id === prevId) {          // handed back the same camera — not a flip
+      s.getTracks().forEach(t => t.stop());
+      continue;
+    }
+    await attach(s);
+    facing = settingsOf(s).facingMode || next;
+    switching = false;
+    flipBtn.disabled = false;
+    return;
+  }
+
+  // Nothing else would open — put the original camera back.
+  try { await attach(await openCamera({ facingMode: prevFace })); } catch {}
+  facing = prevFace;
+  showToast('Could not switch camera', 'err');
+  switching = false;
+  flipBtn.disabled = false;
 }
 
 function capture() {
+  if (!activeStream || switching) return;
   const vw = video.videoWidth  || 1280;
   const vh = video.videoHeight || 720;
   let w = vw, h = vh;
@@ -221,7 +297,22 @@ document.getElementById('back-btn').addEventListener('click', () => {
   countEl.hidden = true;
 });
 captureBtn.addEventListener('click', capture);
-document.getElementById('flip-btn').addEventListener('click', flipCamera);
+flipBtn.addEventListener('click', flipCamera);
+
+// The browser owns the permission grant and keeps it per-origin, so a
+// returning guest who already allowed the camera is never prompted again —
+// tapping Start just opens the stream. This only reflects that state in the
+// UI: warn when the grant was revoked, and drop our cached flag to match.
+(async function readGrant() {
+  let state = '';
+  try { state = (await navigator.permissions.query({ name: 'camera' })).state; } catch {}
+  if (state === 'denied') {
+    try { localStorage.removeItem(GRANT_KEY); } catch {}
+    showNote('Camera access is blocked for this site. Allow it in your browser settings to join in.');
+  } else if (state === 'granted') {
+    try { localStorage.setItem(GRANT_KEY, '1'); } catch {}
+  }
+})();
 </script>
 </body>
 </html>
