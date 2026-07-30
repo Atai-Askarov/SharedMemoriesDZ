@@ -113,11 +113,9 @@ const UPLOAD_URL   = 'https://script.google.com/macros/s/AKfycbzq5G7Ap28lgYywdL-
 const JPEG_QUALITY = 0.85;
 const MAX_SIDE     = 1920;
 
-const streamCache  = {};   // deviceId → MediaStream
-let videoDevices   = [];   // all available cameras
-let deviceIndex    = 0;    // which camera is active
-let activeStream   = null;
-let photoCount     = 0;
+let activeStream = null;
+let facing       = 'environment';
+let photoCount   = 0;
 let toastTimer;
 
 const video      = document.getElementById('video');
@@ -139,33 +137,13 @@ function showToast(msg, type) {
   toastTimer = setTimeout(() => { toastEl.className = ''; }, 2500);
 }
 
-async function getStreamById(deviceId) {
-  if (streamCache[deviceId]?.active) return streamCache[deviceId];
-  const s = await navigator.mediaDevices.getUserMedia({
-    video: { deviceId: { exact: deviceId }, width: { ideal: MAX_SIDE } },
-    audio: false
-  });
-  streamCache[deviceId] = s;
-  return s;
-}
-
 async function startCamera() {
   try {
-    // First call: use facingMode so the rear camera is default
-    const s = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: MAX_SIDE } },
+    activeStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: facing, width: { ideal: MAX_SIDE } },
       audio: false
     });
-    // Permission granted — enumerate all cameras (labels only available after grant)
-    const all = await navigator.mediaDevices.enumerateDevices();
-    videoDevices = all.filter(d => d.kind === 'videoinput');
-    // Find which device we just got and cache it
-    const currentId = s.getVideoTracks()[0].getSettings().deviceId;
-    streamCache[currentId] = s;
-    deviceIndex = videoDevices.findIndex(d => d.deviceId === currentId);
-    if (deviceIndex < 0) deviceIndex = 0;
-    activeStream = s;
-    video.srcObject = s;
+    video.srcObject = activeStream;
     await video.play().catch(() => {});
     showScreen('cam-screen');
   } catch {
@@ -174,23 +152,26 @@ async function startCamera() {
 }
 
 function stopAllStreams() {
-  Object.values(streamCache).forEach(s => s.getTracks().forEach(t => t.stop()));
-  Object.keys(streamCache).forEach(k => delete streamCache[k]);
+  activeStream?.getTracks().forEach(t => t.stop());
   video.srcObject = null;
   activeStream = null;
 }
 
 async function flipCamera() {
-  if (videoDevices.length < 2) { showToast('No second camera found', 'err'); return; }
-  deviceIndex = (deviceIndex + 1) % videoDevices.length;
-  const deviceId = videoDevices[deviceIndex].deviceId;
+  const next = facing === 'environment' ? 'user' : 'environment';
   try {
-    const s = await getStreamById(deviceId);
+    // getUserMedia here does NOT prompt — permission was already granted at startCamera
+    const s = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { exact: next }, width: { ideal: MAX_SIDE } },
+      audio: false
+    });
+    activeStream.getTracks().forEach(t => t.stop());
     activeStream = s;
+    facing = next;
     video.srcObject = s;
     await video.play().catch(() => {});
-  } catch (e) {
-    showToast('Could not switch camera', 'err');
+  } catch {
+    showToast('Front camera not available', 'err');
   }
 }
 
