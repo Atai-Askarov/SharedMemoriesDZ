@@ -139,12 +139,6 @@ function showToast(msg, type) {
 
 async function startCamera() {
   try {
-    // Step 1: generic request with no facingMode — this is what iOS/Android show
-    // in the permission prompt. Granting it covers ALL cameras, not just one.
-    const probe = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-    probe.getTracks().forEach(t => t.stop());
-
-    // Step 2: now open the rear camera — silent, permission already granted above.
     activeStream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment', width: { ideal: MAX_SIDE } },
       audio: false
