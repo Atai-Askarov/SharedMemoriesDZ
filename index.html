@@ -119,6 +119,9 @@ const UPLOAD_URL   = 'https://script.google.com/macros/s/AKfycbzq5G7Ap28lgYywdL-
 const JPEG_QUALITY = 0.85;
 const MAX_SIDE     = 1920;
 const GRANT_KEY    = 'sm-camera-granted';
+// A browser cannot create an album on the phone, so the filename is what
+// groups a guest's shots together wherever they land.
+const GALLERY_NAME = 'David-Zoe-Wedding';
 
 let activeStream = null;
 let facing       = 'environment';
@@ -278,6 +281,41 @@ async function flipCamera() {
   flipBtn.disabled = false;
 }
 
+// Local date-time, so the guest's own gallery sorts the night in order.
+function stamp() {
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+         '_' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+}
+
+// Keep a copy on the phone as well as in Drive, so a guest still has their
+// photos if the upload never lands — and so the couple are not the only
+// people holding the night.
+//
+// This is deliberately called while the shutter tap is still the active
+// gesture: Safari only honours a programmatic download inside one.
+function saveToDevice(b64, filename) {
+  try {
+    const bin   = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' }));
+    const a   = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // The download reads the blob asynchronously — revoking immediately would
+    // pull it out from under a phone that has not started writing yet.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (err) {
+    // A failed local copy must never cost the guest the upload.
+    showToast('Could not save to this device', 'err');
+  }
+}
+
 function capture() {
   if (!activeStream || switching) return;
   const vw = video.videoWidth  || 1280;
@@ -291,6 +329,8 @@ function capture() {
   const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
   const b64  = dataUrl.slice(dataUrl.indexOf(',') + 1);
   const name = 'photo-' + Date.now() + '.jpg';
+
+  saveToDevice(b64, GALLERY_NAME + '-' + stamp() + '.jpg');
 
   // Shutter flash
   flashEl.style.transition = 'none';
