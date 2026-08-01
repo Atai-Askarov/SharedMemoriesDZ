@@ -33,6 +33,26 @@ body.shooting{overflow:hidden;overscroll-behavior:none}
 #start-btn:active{background:#a86868}
 #welcome-note{margin-top:20px;max-width:300px;font-size:0.82rem;line-height:1.5;color:#a05656}
 
+/* Session strip */
+#strip{
+  display:flex;gap:10px;align-self:stretch;
+  margin-bottom:32px;padding:4px 2px;
+  overflow-x:auto;scroll-snap-type:x proximity;
+  -webkit-overflow-scrolling:touch;scrollbar-width:none
+}
+#strip::-webkit-scrollbar{display:none}
+.shot{
+  flex:0 0 88px;height:88px;border-radius:10px;
+  object-fit:cover;background:#f0e4e0;scroll-snap-align:start
+}
+#ghost{
+  flex:0 0 88px;height:88px;border-radius:10px;
+  border:2px dashed #e0c4bc;background:transparent;color:#c08080;
+  font-size:1.6rem;line-height:1;cursor:pointer;touch-action:manipulation;
+  display:flex;align-items:center;justify-content:center
+}
+#ghost:active{background:#f7ece8}
+
 /* Camera */
 #cam-screen{background:#000;overflow:hidden}
 #video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
@@ -89,6 +109,9 @@ canvas{display:none}
   <p id="welcome-date">August 1, 2026</p>
   <h1>David &amp; Zoe</h1>
   <p id="welcome-tagline">Help us capture memories<br>from today</p>
+  <div id="strip" role="list" aria-label="Photos you have taken">
+    <button id="ghost" type="button" aria-label="Take your first photo">+</button>
+  </div>
   <button id="start-btn">Start capturing</button>
   <p id="welcome-note" hidden></p>
 </section>
@@ -137,6 +160,8 @@ const flashEl    = document.getElementById('flash');
 const captureBtn = document.getElementById('capture-btn');
 const flipBtn    = document.getElementById('flip-btn');
 const noteEl     = document.getElementById('welcome-note');
+const stripEl    = document.getElementById('strip');
+const ghostEl    = document.getElementById('ghost');
 
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -281,6 +306,40 @@ async function flipCamera() {
   flipBtn.disabled = false;
 }
 
+// The strip keeps thumbnails, never the full frames — a guest who shoots all
+// night would otherwise have a hundred megabytes of JPEG pinned in memory
+// behind a row of 88px squares.
+const THUMB_SIDE = 264;   // 88px at 3×, so it stays sharp on a phone screen
+
+// Centre-cropped to a square, so portrait and landscape shots sit evenly in
+// the row instead of the strip jumping about as the guest flips the camera.
+function thumbnailOf(source) {
+  const side = Math.min(source.width, source.height);
+  const t = document.createElement('canvas');
+  t.width = t.height = THUMB_SIDE;
+  t.getContext('2d').drawImage(
+    source,
+    (source.width - side) / 2, (source.height - side) / 2, side, side,
+    0, 0, THUMB_SIDE, THUMB_SIDE
+  );
+  return t.toDataURL('image/jpeg', 0.7);
+}
+
+// Newest first, so the shot a guest just took is the one they land on. The
+// strip deliberately outlives leaving the viewfinder — it is the whole of what
+// the welcome screen has to show, and resetting it on every back press would
+// mean the home screen were always empty.
+function addShot(src) {
+  const img = document.createElement('img');
+  img.className = 'shot';
+  img.src = src;
+  img.alt = '';
+  img.setAttribute('role', 'listitem');
+  stripEl.prepend(img);
+  ghostEl.hidden = true;
+  stripEl.scrollLeft = 0;
+}
+
 // Local date-time, so the guest's own gallery sorts the night in order.
 function stamp() {
   const d = new Date(), p = n => String(n).padStart(2, '0');
@@ -331,6 +390,7 @@ function capture() {
   const name = 'photo-' + Date.now() + '.jpg';
 
   saveToDevice(b64, GALLERY_NAME + '-' + stamp() + '.jpg');
+  addShot(thumbnailOf(canvas));
 
   // Shutter flash
   flashEl.style.transition = 'none';
@@ -354,6 +414,8 @@ function capture() {
 }
 
 document.getElementById('start-btn').addEventListener('click', startCamera);
+// The empty-state card is the same invitation as the button below it.
+ghostEl.addEventListener('click', startCamera);
 // Both the on-screen arrow and the phone's back button take the same route,
 // so the history entry is always consumed exactly once.
 document.getElementById('back-btn').addEventListener('click', () => history.back());
