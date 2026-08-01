@@ -52,6 +52,7 @@ body.shooting{overflow:hidden;overscroll-behavior:none}
   display:flex;align-items:center;justify-content:center
 }
 #ghost:active{background:#f7ece8}
+#pending{margin:-20px 0 24px;font-size:0.78rem;color:#a89090}
 
 /* Camera */
 #cam-screen{background:#000;overflow:hidden}
@@ -112,6 +113,7 @@ canvas{display:none}
   <div id="strip" role="list" aria-label="Photos you have taken">
     <button id="ghost" type="button" aria-label="Take your first photo">+</button>
   </div>
+  <p id="pending" role="status" aria-live="polite" hidden></p>
   <button id="start-btn">Start capturing</button>
   <p id="welcome-note" hidden></p>
 </section>
@@ -145,6 +147,10 @@ const GRANT_KEY    = 'sm-camera-granted';
 // A browser cannot create an album on the phone, so the filename is what
 // groups a guest's shots together wherever they land.
 const GALLERY_NAME = 'David-Zoe-Wedding';
+const DB_NAME      = 'shared-memories';
+const META         = 'meta';    // id, name, thumbnail, sent flag
+const BLOBS        = 'blobs';   // id -> full-size JPEG
+const RETRY_MS     = 20000;   // how often a phone with unsent photos retries
 
 let activeStream = null;
 let facing       = 'environment';
@@ -162,6 +168,19 @@ const flipBtn    = document.getElementById('flip-btn');
 const noteEl     = document.getElementById('welcome-note');
 const stripEl    = document.getElementById('strip');
 const ghostEl    = document.getElementById('ghost');
+const pendingEl  = document.getElementById('pending');
+
+let pendingCount = 0;
+
+// Honest about what is still only on this phone, so a guest who leaves early
+// knows there is something left to send.
+function showPending(delta) {
+  pendingCount = Math.max(0, pendingCount + delta);
+  pendingEl.textContent = pendingCount === 1
+    ? '1 photo still to upload'
+    : pendingCount + ' photos still to upload';
+  pendingEl.hidden = pendingCount === 0;
+}
 
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -306,6 +325,135 @@ async function flipCamera() {
   flipBtn.disabled = false;
 }
 
+/* ---- Durable store -------------------------------------------------------
+   A photo is written to IndexedDB before the network is ever involved, and is
+   never deleted afterwards. Two reasons it is a permanent copy rather than an
+   outbox: the guest keeps their own night, and — because the upload posts
+   no-cors and so cannot read a reply — we can never actually prove a photo
+   reached Drive. Deleting on an unprovable success would be how photos vanish.
+
+   Full frames are stored as Blobs, not base64: a third smaller, which matters
+   against Safari's storage quota over a few hundred shots.                  */
+
+let db = null;
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const d = req.result;
+      // Metadata and pixels live apart on purpose. Listing the night has to
+      // read every metadata row, and if the full frame sat in the same record
+      // that listing would drag hundreds of megabytes of JPEG into memory to
+      // answer "which ones still need sending?".
+      if (!d.objectStoreNames.contains(META))  d.createObjectStore(META, { keyPath: 'id', autoIncrement: true });
+      if (!d.objectStoreNames.contains(BLOBS)) d.createObjectStore(BLOBS, { keyPath: 'id' });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  });
+}
+
+function request(store, mode, run) {
+  return new Promise((resolve, reject) => {
+    if (!db) return reject(new Error('no store'));
+    const req = run(db.transaction(store, mode).objectStore(store));
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  });
+}
+
+// Thumbnails only — small enough that the whole night fits in memory.
+const allMeta   = ()   => request(META,  'readonly', s => s.getAll());
+const blobById  = (id) => request(BLOBS, 'readonly', s => s.get(id));
+
+// One transaction across both stores, so a photo can never end up as a
+// metadata row with no pixels behind it.
+function savePhoto(meta, blob) {
+  return new Promise((resolve, reject) => {
+    if (!db) return reject(new Error('no store'));
+    const t   = db.transaction([META, BLOBS], 'readwrite');
+    const req = t.objectStore(META).add(meta);
+    req.onsuccess = () => t.objectStore(BLOBS).put({ id: req.result, blob: blob });
+    t.oncomplete  = () => resolve(req.result);
+    t.onerror     = () => reject(t.error);
+  });
+}
+
+function markSent(id) {
+  return request(META, 'readonly', s => s.get(id)).then(rec => {
+    if (!rec) return;
+    rec.sent = 1;
+    return request(META, 'readwrite', s => s.put(rec));
+  });
+}
+
+function blobOf(b64) {
+  const bin   = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: 'image/jpeg' });
+}
+
+function base64Of(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload  = () => resolve(r.result.slice(r.result.indexOf(',') + 1));
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+
+/* ---- Upload queue --------------------------------------------------------
+   Drained one photo at a time. A guest firing off ten shots used to spawn ten
+   parallel megabyte uploads competing with each other and with every other
+   phone in the room; sequential draining is the whole point of the queue.
+
+   Note what a resolved fetch does and does not mean here: no-cors yields an
+   opaque response that resolves for any status, including a rejection from
+   Apps Script. So this can only detect the network being down, not the server
+   turning us away. Photos are marked sent, never confirmed.                 */
+
+let draining = false;
+
+function postPhoto(name, b64) {
+  return fetch(UPLOAD_URL, {
+    method: 'POST', mode: 'no-cors',
+    headers: { 'Content-Type': 'text/plain' },
+    body: name + '|' + b64
+  });
+}
+
+async function drainQueue() {
+  if (draining || !db) return;
+  draining = true;
+  try {
+    const pending = (await allMeta()).filter(p => !p.sent);
+    for (const rec of pending) {
+      try {
+        // Fetched one at a time: only the photo being sent is ever in memory.
+        const row = await blobById(rec.id);
+        if (!row) { await markSent(rec.id); continue; }   // pixels gone; nothing to send
+        await postPhoto(rec.name, await base64Of(row.blob));
+      } catch {
+        break;   // connection is gone — leave the rest queued for the retry
+      }
+      await markSent(rec.id);
+      showPending(-1);
+    }
+  } catch {
+    /* store unreadable — the retry timer will come back round */
+  } finally {
+    draining = false;
+  }
+}
+
+// Retry whenever the phone has a reason to think things changed, plus a slow
+// timer for the case where nothing announces itself.
+window.addEventListener('online', drainQueue);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) drainQueue(); });
+setInterval(drainQueue, RETRY_MS);
+
 // The strip keeps thumbnails, never the full frames — a guest who shoots all
 // night would otherwise have a hundred megabytes of JPEG pinned in memory
 // behind a row of 88px squares.
@@ -390,7 +538,8 @@ function capture() {
   const name = 'photo-' + Date.now() + '.jpg';
 
   saveToDevice(b64, GALLERY_NAME + '-' + stamp() + '.jpg');
-  addShot(thumbnailOf(canvas));
+  const thumb = thumbnailOf(canvas);
+  addShot(thumb);
 
   // Shutter flash
   flashEl.style.transition = 'none';
@@ -404,13 +553,19 @@ function capture() {
   countEl.textContent = photoCount + (photoCount === 1 ? ' photo' : ' photos');
   countEl.hidden = false;
 
-  // Upload in background — camera stays live
-  fetch(UPLOAD_URL, {
-    method: 'POST', mode: 'no-cors',
-    headers: { 'Content-Type': 'text/plain' },
-    body: name + '|' + b64
-  }).then(() => showToast('Saved!', 'ok'))
-    .catch(() => showToast('Upload failed — try again', 'err'));
+  // Store first, send after — the photo is safe on the phone before the
+  // network is given a chance to lose it. The camera stays live throughout.
+  showPending(1);
+  savePhoto({ name: name, thumb: thumb, sent: 0, at: Date.now() }, blobOf(b64))
+    .then(() => { showToast('Saved!', 'ok'); drainQueue(); })
+    .catch(() => {
+      // No durable store on this phone (private browsing, quota, old browser).
+      // Fall back to the original straight-to-Drive post so the photo still
+      // has its one chance, rather than being dropped for want of a database.
+      showPending(-1);
+      postPhoto(name, b64).then(() => showToast('Saved!', 'ok'))
+                          .catch(() => showToast('Upload failed — try again', 'err'));
+    });
 }
 
 document.getElementById('start-btn').addEventListener('click', startCamera);
@@ -431,6 +586,25 @@ flipBtn.addEventListener('click', flipCamera);
 // returning guest who already allowed the camera is never prompted again —
 // tapping Start just opens the stream. This only reflects that state in the
 // UI: warn when the grant was revoked, and drop our cached flag to match.
+// Bring back everything this phone has already taken. A guest who reloads, or
+// who closed the tab and came back after dinner, finds their night intact and
+// anything unsent still queued.
+(async function restore() {
+  try {
+    db = await openDb();
+  } catch {
+    return;   // no store: capture() falls back to posting straight to Drive
+  }
+  try {
+    const photos = (await allMeta()).sort((a, b) => a.id - b.id);
+    photos.forEach(p => addShot(p.thumb));            // ascending, so newest ends up first
+    showPending(photos.filter(p => !p.sent).length);
+    drainQueue();
+  } catch {
+    /* nothing to restore */
+  }
+})();
+
 (async function readGrant() {
   let state = '';
   try { state = (await navigator.permissions.query({ name: 'camera' })).state; } catch {}
